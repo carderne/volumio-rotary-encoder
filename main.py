@@ -38,16 +38,6 @@ try:
                     ]
                 )
             clkState = GPIO.input(clk)
-        # swState = GPIO.input(sw)
-        # if swState == 1:
-        #     if not stopped:
-        #         subprocess.call(["curl", "stop"])
-        #         stopped = True
-        #     else:
-        #         subprocess.call(["curl", "play"])
-        #         stopped = False
-        #     swState = GPIO.input(sw)
-        #     sleep(0.2)
         clkLastState = clkState
         sleep(0.005)
 finally:
