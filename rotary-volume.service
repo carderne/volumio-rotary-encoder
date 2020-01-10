@@ -1,0 +1,16 @@
+[Unit]
+Description=Volume knob
+After=volumio.service
+Requires=volumio.service
+
+[Service]
+User=volumio
+Group=volumio
+ExecStartPre=/bin/sleep 30
+ExecStart=/home/volumio/rotary/main.py
+WorkingDirectory=/home/volumio/rotary/
+Restart=on-failure
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
