@@ -21,23 +21,21 @@ import signal
 import subprocess
 import sys
 import threading
-
-from RPi import GPIO
 from queue import Queue
 
+from RPi import GPIO
+
 # The two pins that the encoder uses (BCM numbering).
-GPIO_A = 13
-GPIO_B = 6
+GPIO_A = 6
+GPIO_B = 13
 
 # The pin that the knob's button is hooked up to.
 GPIO_BUTTON = 5
 
-# The minimum and maximum volumes, as percentages.
-VOLUME_MIN = 0
-VOLUME_MAX = 100
-
-# The amount you want one click of the knob to increase or decrease the
-VOLUME_INCREMENT = 1
+# The minimum and maximum volumes, and increment.
+MIN = 0
+MAX = 100
+INCREMENT = 1
 
 # When the knob is turned, the callback happens in a separate thread. If
 # those turn callbacks fire erratically or out of order, we'll get confused
@@ -140,66 +138,34 @@ class Volume:
     A wrapper API for interacting with the volume settings on the RPi.
     """
 
-    MIN = VOLUME_MIN
-    MAX = VOLUME_MAX
-    INCREMENT = VOLUME_INCREMENT
-
     def __init__(self):
-        # Set an initial value for last_volume in case we're muted when we start.
-        self.last_volume = self.MIN
+        self.last_volume = MIN
         self._sync()
 
     def up(self):
-        return self.change(self.INCREMENT)
+        self.set_volume(self.volume + INCREMENT)
 
     def down(self):
-        return self.change(-self.INCREMENT)
-
-    def change(self, delta):
-        v = self.volume + delta
-        v = self._constrain(v)
-        return self.set_volume(v)
+        self.set_volume(self.volume - INCREMENT)
 
     def set_volume(self, v):
-        self.volume = self._constrain(v)
-        self._sync(v)
-        return self.volume
+        self.volume = self.clamp(v)
+        self._sync(self.volume)
+        self.volumio(self.volume)
 
     def toggle(self):
-        return self.amixer("toggle")
+        self.volumio("toggle")
 
-    def status(self):
-        if self.is_muted:
-            return "{}% (muted)".format(self.volume)
-        return "{}%".format(self.volume)
+    def _sync(self, v=None):
+        if not v:
+            v = int(subprocess.check_output(["volumio", "volume"]).strip())
+        self.volume = v
 
-    def _sync(self, output=None):
-        if output is None:
-            output = self.amixer("")
-            lines = output.readlines()
-            last = lines[-1].decode("utf-8")
-            output = int(last.strip())
+    def clamp(self, v):
+        return max(min(MAX, v), MIN)
 
-        self.is_muted = False
-        self.volume = output
-
-    def _constrain(self, v):
-        if v < self.MIN:
-            return self.MIN
-        if v > self.MAX:
-            return self.MAX
-        return v
-
-    def amixer(self, cmd):
-        p = subprocess.Popen(
-            "volumio volume {}".format(cmd), shell=True, stdout=subprocess.PIPE
-        )
-        code = p.wait()
-        if code != 0:
-            raise VolumeError("Unknown error")
-            sys.exit(0)
-
-        return p.stdout
+    def volumio(self, cmd):
+        subprocess.call(["volumio", "volume", str(cmd)])
 
 
 if __name__ == "__main__":
@@ -207,13 +173,8 @@ if __name__ == "__main__":
 
     def on_press(value):
         v.toggle()
-        print("Toggled mute to: {}".format(v.is_muted))
         EVENT.set()
 
-    # This callback runs in the background thread. All it does is put turn
-    # events into a queue and flag the main thread to process them. The
-    # queueing ensures that we won't miss anything if the knob is turned
-    # extremely quickly.
     def on_turn(delta):
         QUEUE.put(delta)
         EVENT.set()
@@ -224,13 +185,10 @@ if __name__ == "__main__":
             handle_delta(delta)
 
     def handle_delta(delta):
-        if v.is_muted:
-            v.toggle()
         if delta == 1:
-            vol = v.up()
+            v.up()
         else:
-            vol = v.down()
-        print("Set volume to: {}".format(vol))
+            v.down()
 
     def on_exit(a, b):
         print("Exiting...")
@@ -243,16 +201,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, on_exit)
 
     while True:
-        # This is the best way I could come up with to ensure that this script
-        # runs indefinitely without wasting CPU by polling. The main thread will
-        # block quietly while waiting for the event to get flagged. When the knob
-        # is turned we're able to respond immediately, but when it's not being
-        # turned we're not looping at all.
-        #
-        # The 1200-second (20 minute) timeout is a hack; for some reason, if I
-        # don't specify a timeout, I'm unable to get the SIGINT handler above to
-        # work properly. But if there is a timeout set, even if it's a very long
-        # timeout, then Ctrl-C works as intended. No idea why.
         EVENT.wait(1200)
         consume_queue()
         EVENT.clear()
