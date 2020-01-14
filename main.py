@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-# From here: https://gist.github.com/savetheclocktower/9b5f67c20f6c04e65ed88f2e594d43c1
+# Modified from this gist:
+# https://gist.github.com/savetheclocktower/9b5f67c20f6c04e65ed88f2e594d43c1
 
 """
 The daemon responsible for changing the volume in response to a turn or press
@@ -25,181 +26,124 @@ from queue import Queue
 
 from RPi import GPIO
 
-# The two pins that the encoder uses (BCM numbering).
-GPIO_A = 6
-GPIO_B = 13
-
-# The pin that the knob's button is hooked up to.
-GPIO_BUTTON = 5
+# The rotary and switch pins that the encoder uses (BCM numbering).
+GPIO_A = 27
+GPIO_B = 22
+GPIO_BUTTON = 17
 
 # The minimum and maximum volumes, and increment.
 MIN = 0
 MAX = 100
 INCREMENT = 1
 
-# When the knob is turned, the callback happens in a separate thread. If
-# those turn callbacks fire erratically or out of order, we'll get confused
-# about which direction the knob is being turned, so we'll use a queue to
-# enforce FIFO. The callback will push onto a queue, and all the actual
-# volume-changing will happen in the main thread.
+# When the knob is turned, the callback happens in a separate thread.
+# We'll use a queue to enforce FIFO. When we put something in the queue,
+# we'll use an event to signal to the main thread that there's something.
 QUEUE = Queue()
-
-# When we put something in the queue, we'll use an event to signal to the
-# main thread that there's something in there. Then the main thread will
-# process the queue and reset the event. If the knob is turned very quickly,
-# this event loop will fall behind, but that's OK because it consumes the
-# queue completely each time through the loop, so it's guaranteed to catch up.
 EVENT = threading.Event()
 
 
 class RotaryEncoder:
     """
     A class to decode mechanical rotary encoder pulses.
-
-    Ported to RPi.GPIO from the pigpio sample here:
-    http://abyz.co.uk/rpi/pigpio/examples.html
     """
 
-    def __init__(
-        self, gpioA, gpioB, callback=None, buttonPin=None, buttonCallback=None
-    ):
+    def __init__(self, callback=None, button_callback=None):
         """
-        Instantiate the class. Takes three arguments: the two pin numbers to
-        which the rotary encoder is connected, plus a callback to run when the
-        switch is turned.
+        Instatiate the class with the two callbacks.
 
         The callback receives one argument: a `delta` that will be either 1 or -1.
-        One of them means that the dial is being turned to the right; the other
-        means that the dial is being turned to the left. I'll be damned if I know
-        yet which one is which.
         """
 
-        self.lastGpio = None
-        self.gpioA = gpioA
-        self.gpioB = gpioB
+        self.last_gpio = None
         self.callback = callback
-
-        self.gpioButton = buttonPin
-        self.buttonCallback = buttonCallback
+        self.button_callback = button_callback
 
         self.levA = 0
         self.levB = 0
 
         GPIO.setmode(GPIO.BCM)
-        GPIO.setup(self.gpioA, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.setup(self.gpioB, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(GPIO_A, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(GPIO_B, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(GPIO_BUTTON, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-        GPIO.add_event_detect(self.gpioA, GPIO.BOTH, self._callback)
-        GPIO.add_event_detect(self.gpioB, GPIO.BOTH, self._callback)
-
-        if self.gpioButton:
-            GPIO.setup(self.gpioButton, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            GPIO.add_event_detect(
-                self.gpioButton, GPIO.FALLING, self._buttonCallback, bouncetime=500
-            )
+        GPIO.add_event_detect(GPIO_A, GPIO.BOTH, self._callback)
+        GPIO.add_event_detect(GPIO_B, GPIO.BOTH, self._callback)
+        GPIO.add_event_detect(
+            GPIO_BUTTON, GPIO.FALLING, self._button_callback, bouncetime=500
+        )
 
     def destroy(self):
-        GPIO.remove_event_detect(self.gpioA)
-        GPIO.remove_event_detect(self.gpioB)
+        GPIO.remove_event_detect(GPIO_A)
+        GPIO.remove_event_detect(GPIO_B)
+        GPIO.remove_event_detect(GPIO_BUTTON)
         GPIO.cleanup()
 
-    def _buttonCallback(self, channel):
-        self.buttonCallback(GPIO.input(channel))
+    def _button_callback(self, channel):
+        self.button_callback(GPIO.input(channel))
 
     def _callback(self, channel):
         level = GPIO.input(channel)
-        if channel == self.gpioA:
+        if channel == GPIO_A:
             self.levA = level
         else:
             self.levB = level
 
         # Debounce.
-        if channel == self.lastGpio:
+        if channel == self.last_gpio:
             return
 
-        # When both inputs are at 1, we'll fire a callback. If A was the most
-        # recent pin set high, it'll be forward, and if B was the most recent pin
-        # set high, it'll be reverse.
-        self.lastGpio = channel
-        if channel == self.gpioA and level == 1:
+        # If A was the most recent pin set high, it'll be forward
+        # if B was the most recent pin set high, it'll be reverse.
+        self.last_gpio = channel
+        if channel == GPIO_A and level == 1:
             if self.levB == 1:
                 self.callback(1)
-        elif channel == self.gpioB and level == 1:
+        elif channel == GPIO_B and level == 1:
             if self.levA == 1:
                 self.callback(-1)
 
 
-class VolumeError(Exception):
-    pass
+def clamp(v):
+    return max(min(MAX, v), MIN)
 
 
-class Volume:
-    """
-    A wrapper API for interacting with the volume settings on the RPi.
-    """
+def volumio(cmd):
+    subprocess.call(["volumio", "volume", str(cmd)])
 
-    def __init__(self):
-        self.last_volume = MIN
-        self._sync()
 
-    def up(self):
-        self.set_volume(self.volume + INCREMENT)
+def on_press(value):
+    volumio("toggle")
+    EVENT.set()
 
-    def down(self):
-        self.set_volume(self.volume - INCREMENT)
 
-    def set_volume(self, v):
-        self.volume = self.clamp(v)
-        self._sync(self.volume)
-        self.volumio(self.volume)
+def on_turn(delta):
+    QUEUE.put(delta)
+    EVENT.set()
 
-    def toggle(self):
-        self.volumio("toggle")
 
-    def _sync(self, v=None):
-        if not v:
-            v = int(subprocess.check_output(["volumio", "volume"]).strip())
-        self.volume = v
+def consume_queue():
+    while not QUEUE.empty():
+        delta = QUEUE.get()
+        handle_delta(delta)
 
-    def clamp(self, v):
-        return max(min(MAX, v), MIN)
 
-    def volumio(self, cmd):
-        subprocess.call(["volumio", "volume", str(cmd)])
+def handle_delta(delta):
+    if delta == 1:
+        volumio("plus")
+    else:
+        volumio("minus")
+
+
+def on_exit(a, b):
+    print("Exiting...")
+    encoder.destroy()
+    sys.exit(0)
 
 
 if __name__ == "__main__":
-    v = Volume()
-
-    def on_press(value):
-        v.toggle()
-        EVENT.set()
-
-    def on_turn(delta):
-        QUEUE.put(delta)
-        EVENT.set()
-
-    def consume_queue():
-        while not QUEUE.empty():
-            delta = QUEUE.get()
-            handle_delta(delta)
-
-    def handle_delta(delta):
-        if delta == 1:
-            v.up()
-        else:
-            v.down()
-
-    def on_exit(a, b):
-        print("Exiting...")
-        encoder.destroy()
-        sys.exit(0)
-
-    encoder = RotaryEncoder(
-        GPIO_A, GPIO_B, callback=on_turn, buttonPin=GPIO_BUTTON, buttonCallback=on_press
-    )
+    encoder = RotaryEncoder(callback=on_turn, button_callback=on_press)
     signal.signal(signal.SIGINT, on_exit)
-
     while True:
         EVENT.wait(1200)
         consume_queue()
