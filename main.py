@@ -73,12 +73,6 @@ class RotaryEncoder:
             GPIO_BUTTON, GPIO.FALLING, self._button_callback, bouncetime=500
         )
 
-    def destroy(self):
-        GPIO.remove_event_detect(GPIO_A)
-        GPIO.remove_event_detect(GPIO_B)
-        GPIO.remove_event_detect(GPIO_BUTTON)
-        GPIO.cleanup()
-
     def _button_callback(self, channel):
         self.button_callback(GPIO.input(channel))
 
@@ -137,7 +131,10 @@ def handle_delta(delta):
 
 def on_exit(a, b):
     print("Exiting...")
-    encoder.destroy()
+    GPIO.remove_event_detect(GPIO_A)
+    GPIO.remove_event_detect(GPIO_B)
+    GPIO.remove_event_detect(GPIO_BUTTON)
+    GPIO.cleanup()
     sys.exit(0)
 
 
